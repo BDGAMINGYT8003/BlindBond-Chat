@@ -1,0 +1,16 @@
+{
+  "name": "blindbond-chat",
+  "version": "1.0.0",
+  "description": "Anonymous discord.js v14 Matchmaking & Chat Bot",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "discord.js": "^14.11.0",
+    "sqlite3": "^5.1.6",
+    "uuid": "^9.0.0",
+    "dotenv": "^16.0.3"
+  }
+}
