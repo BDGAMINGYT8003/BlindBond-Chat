@@ -1,8 +1,9 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, Collection, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, Events, REST, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const db = require('./db');
+const { startTasks } = require('./utils/backgroundTasks');
 
 const client = new Client({
     intents: [
@@ -50,12 +51,32 @@ process.on('unhandledRejection', error => {
 	console.error('Unhandled promise rejection:', error);
 });
 
-client.once(Events.ClientReady, c => {
-    console.log(`Ready! Logged in as ${c.user.tag}`);
-});
+async function deployCommands() {
+    if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
+        console.log("Skipping command deployment: Missing DISCORD_TOKEN or CLIENT_ID.");
+        return;
+    }
 
-const { startTasks } = require('./utils/backgroundTasks');
-const { deployCommands } = require('./deploy-commands');
+    const commands = [];
+    client.commands.forEach(command => {
+        commands.push(command.data.toJSON());
+    });
+
+    const rest = new REST().setToken(process.env.DISCORD_TOKEN);
+
+    try {
+        console.log(`Started refreshing ${commands.length} application (/) commands.`);
+
+        const data = await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commands },
+        );
+
+        console.log(`Successfully reloaded ${data.length} application (/) commands.`);
+    } catch (error) {
+        console.error(error);
+    }
+}
 
 client.once(Events.ClientReady, async c => {
     console.log(`Ready! Logged in as ${c.user.tag}`);
