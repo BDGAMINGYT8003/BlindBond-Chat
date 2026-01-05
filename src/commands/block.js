@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const db = require('../db');
-const { createEmbed, COLORS } = require('../utils/helpers');
+const { createSuccessEmbed, createErrorEmbed, isValidUUID } = require('../utils/helpers');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -13,44 +13,50 @@ module.exports = {
     async execute(interaction) {
         const targetAnonId = interaction.options.getString('anon_id');
 
-        // Validation: Can't block yourself
+        // 1. Validation: UUID Format
+        if (!isValidUUID(targetAnonId)) {
+            return interaction.reply({
+                embeds: [createErrorEmbed("Invalid Anonymous ID format.\nPlease ensure you copied the ID correctly.")],
+                ephemeral: true
+            });
+        }
+
+        // 2. Validation: Self-Block
         const me = await db.get("SELECT anon_id FROM users WHERE discord_id = ?", [interaction.user.id]);
         if (me && me.anon_id === targetAnonId) {
-            return interaction.reply({ content: "You cannot block yourself.", ephemeral: true });
+            return interaction.reply({
+                embeds: [createErrorEmbed("You cannot block yourself.")],
+                ephemeral: true
+            });
         }
 
-        // Check if already blocked
+        // 3. Validation: Already Blocked
         const existing = await db.get("SELECT * FROM blocks WHERE blocker_id = ? AND blocked_anon_id = ?", [interaction.user.id, targetAnonId]);
         if (existing) {
-             return interaction.reply({ content: "User is already blocked.", ephemeral: true });
+             return interaction.reply({
+                 embeds: [createErrorEmbed("This user is already in your block list.")],
+                 ephemeral: true
+             });
         }
 
+        // 4. Execution
         await db.run("INSERT INTO blocks (blocker_id, blocked_anon_id) VALUES (?, ?)", [interaction.user.id, targetAnonId]);
 
-        // If in active chat with this user, end it?
-        // Logic requires checking active sessions.
-        // For simplicity, we assume this command is used after a chat or if they know the ID.
-        // But if they ARE in a chat, we should probably end it.
-
-        // Check active session with this anon id
+        // 5. Active Session Handling
+        // If blocking someone you are currently chatting with, END THE CHAT.
         const session = await db.get(
             "SELECT * FROM sessions WHERE is_active = 1 AND ((user_a_id = ? AND user_b_anon_id = ?) OR (user_b_id = ? AND user_a_anon_id = ?))",
             [interaction.user.id, targetAnonId, interaction.user.id, targetAnonId]
         );
 
         if (session) {
-             // End chat
-             await db.run("UPDATE sessions SET is_active = 0 WHERE session_id = ?", [session.session_id]);
-             await interaction.user.send("Active chat with this user has been ended due to blocking.");
-             // We should notify the other user too that chat ended, but not necessarily that they were blocked.
-             const partnerId = session.user_a_id === interaction.user.id ? session.user_b_id : session.user_a_id;
-             try {
-                 const partner = await interaction.client.users.fetch(partnerId);
-                 await partner.send({ embeds: [createEmbed("Chat Ended", "The chat was ended.", COLORS.ERROR)] });
-             } catch (e) {}
+             const { endSession } = require('../utils/sessionManager');
+             await endSession(interaction.client, session.session_id, "Chat ended due to blocking.");
         }
 
-        const embed = createEmbed("User Blocked", `User ${targetAnonId} has been blocked. You will not match with them again.`, COLORS.SUCCESS);
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.reply({
+            embeds: [createSuccessEmbed("User Blocked", `User \`${targetAnonId}\` has been blocked.\nYou will not be matched with them again.`)],
+            ephemeral: true
+        });
     },
 };

@@ -1,33 +1,55 @@
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const db = require('../db');
-const { createEmbed, COLORS } = require('../utils/helpers');
+const { createEmbed, createErrorEmbed, createInfoEmbed, COLORS, generateAnonId } = require('../utils/helpers');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('new')
         .setDescription('Start searching for a chat partner'),
     async execute(interaction) {
-        // Check if user exists
+        // 1. Check for Active Session
+        const activeSession = await db.get(
+            "SELECT session_id FROM sessions WHERE (user_a_id = ? OR user_b_id = ?) AND is_active = 1",
+            [interaction.user.id, interaction.user.id]
+        );
+
+        if (activeSession) {
+             return interaction.reply({
+                 embeds: [createErrorEmbed("You are already in an active chat!\nUse `/end` to leave it before starting a new one.")],
+                 ephemeral: true
+             });
+        }
+
+        // 2. Check for Queue Presence
+        const inQueue = await db.get("SELECT discord_id FROM queue WHERE discord_id = ?", [interaction.user.id]);
+        if (inQueue) {
+            return interaction.reply({
+                embeds: [createInfoEmbed("Already Searching", "You are already in the matchmaking queue.\nPlease wait while we find you a partner.")],
+                ephemeral: true
+            });
+        }
+
+        // 3. User & Ban Check
         let user = await db.get("SELECT * FROM users WHERE discord_id = ?", [interaction.user.id]);
 
-        // Check if banned
+        // Handle Bans
         if (user && user.is_banned) {
              if (user.ban_expiration && Date.now() > user.ban_expiration) {
-                 // Ban expired
+                 // Unban Logic
                  await db.run("UPDATE users SET is_banned = 0, warnings = 0, ban_expiration = NULL WHERE discord_id = ?", [interaction.user.id]);
-                 user.is_banned = 0; // Update local obj for flow
+                 user.is_banned = 0;
              } else {
                  const expiryDate = user.ban_expiration ? `<t:${Math.floor(user.ban_expiration / 1000)}:R>` : "Permanently";
-                 const embed = createEmbed("Banned", `You are currently banned from using this service.\nExpires: ${expiryDate}`, COLORS.ERROR);
-                 return interaction.reply({ embeds: [embed], ephemeral: true });
+                 return interaction.reply({
+                     embeds: [createErrorEmbed(`You are banned from BlindBond.\nExpires: ${expiryDate}`)],
+                     ephemeral: true
+                 });
              }
         }
 
-        // Onboarding Check
+        // 4. Onboarding Logic
         if (!user || !user.is_onboarded) {
             if (!user) {
-                // Create minimal user record to start
-                const { generateAnonId } = require('../utils/helpers');
                 const anonId = generateAnonId();
                 const now = Date.now();
                 await db.run(
@@ -53,23 +75,17 @@ module.exports = {
             return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
         }
 
-        // Check if already in a session
-        const activeSession = await db.get("SELECT * FROM sessions WHERE (user_a_id = ? OR user_b_id = ?) AND is_active = 1", [interaction.user.id, interaction.user.id]);
-        if (activeSession) {
-            return interaction.reply({ content: "You are already in an active chat! Use `/end` to leave it before starting a new one.", ephemeral: true });
-        }
-
-        // Check if already in queue
-        const inQueue = await db.get("SELECT * FROM queue WHERE discord_id = ?", [interaction.user.id]);
-        if (inQueue) {
-            return interaction.reply({ content: "You are already in the queue! Please wait...", ephemeral: true });
-        }
-
-        // Add to queue
+        // 5. Join Queue
         const now = Date.now();
         await db.run("INSERT INTO queue (discord_id, anon_id, join_time) VALUES (?, ?, ?)", [interaction.user.id, user.anon_id, now]);
 
-        const embed = createEmbed("Searching...", "You have joined the matchmaking queue. We will notify you when a partner is found.", COLORS.INFO);
+        const embed = createEmbed(
+            "Searching...",
+            "You have joined the matchmaking queue.\nWe will notify you when a partner is found.",
+            COLORS.INFO,
+            "Tip: Use /leave if you want to stop searching."
+        );
+
         const row = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
@@ -80,8 +96,7 @@ module.exports = {
 
         await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
 
-        // Trigger Matchmaking (This would typically be an event or interval, but we can trigger a check here)
-        // For simplicity, we'll let the background task handle it, or call a matchmaker function directly.
+        // Trigger Matchmaking
         const matchmaker = require('../utils/matchmaker');
         matchmaker.attemptMatch(interaction.client);
     },
